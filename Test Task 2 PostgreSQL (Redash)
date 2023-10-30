@@ -1,0 +1,55 @@
+Тестовое задание на продуктового аналитика в компании ООО Фортис (входит в группу компаний ООО Монополия)
+
+Задание 2. 
+Необходимо сделать детализированную выгрузку по КА (Контрагентам) сервиса Мультисервис (сервис покупки/продажи топлива со скидками), которая должна включать следующие данные КА 
+с действующими договорами на покупку топлива (Сервисный договор с покупателем): 
+1. Дата подписания договора
+3. Дата настройки первого лимита
+4. Дата первой активации пользователя участника 
+5. Дата первой транзакции (первой прокачки)
+6. Контрагент
+7. Номер телефона
+8. Почта
+
+Задание выполнялось через сервис Redash (PostgreSQL).
+
+Код:
+
+SELECT DISTINCT 
+  a_fds_contracts.createdat AS "Дата подписания договора",
+  min(a_fuel_individuallimits.createdat) AS "Дата настройки первого лимита",
+  a_pfi_aspnetusers.createdat AS "Дата первой активации пользователя",
+  min (a_fuel_transactions.serviceprovisioningdate) AS "Дата первой транзакции",
+  a_fds_contractors.shortname AS "Контрагент",
+  a_pfi_aspnetusers.phonenumber AS "Номер телефона",
+  a_pfi_aspnetusers.email AS "Почта" --,case when tr.serviceprovisioningdate is null then null else min(tr.serviceprovisioningdate) end as "Дата первой транзакции"
+  --,min((select serviceprovisioningdate from pagg.pagg.a_fuel_transactions where c.id=tr.contractid)) - Для выполнения условия из задания "Если транзакций нет, то
+  --они тоже должны попадать в выгрузку со значением NULL", но запрос так не хочет выполняться, выдает ошибку.
+
+FROM
+  pagg.a_fds_contracts AS a_fds_contracts --Договоры
+  
+  JOIN pagg.a_fuel_individuallimits AS a_fuel_individuallimits ON a_fds_contracts.id = a_fuel_individuallimits.contractid --Лимиты 2018-08-16 13:20 (первый лимит)
+  JOIN pagg.a_fds_contractors AS a_fds_contractors ON a_fds_contracts.contractorid = a_fds_contractors.id --Контрагенты
+  LEFT JOIN pagg.a_fuel_transactions AS a_fuel_transactions ON a_fds_contracts.id = a_fuel_transactions.contractid --Транзакции 2022-03-01 19:52 (первая транзакция)
+  JOIN pagg.a_pfi_aspnetusers AS a_pfi_aspnetusers ON a_fuel_individuallimits.clientid = a_pfi_aspnetusers.clientid --Пользователи
+
+WHERE
+  a_fds_contracts.enddate is NULL
+  AND a_fds_contracts.activitytype = 7
+  AND a_pfi_aspnetusers.email NOT LIKE '%@fortis.online%'
+  AND a_pfi_aspnetusers.email NOT LIKE '%@monopoly.su%'
+  AND a_fds_contractors.shortname NOT LIKE '%МОНОПОЛИЯ%' --AND c.id = '9733e149-16f2-11ec-86b8-00505601d4a1'    --9733e149-16f2-11ec-86b8-00505601d4a1 id клиента,
+  --352f9e33-a0e1-40e5-91d6-7a5b631abd70 id Монополии (сотрудники наши, не пользаки) - запрос с этим id ничего не покажет, они нам и не нужны,
+  --для быстрой проверки кода можно ввести id интересующего нас клиента (id см. в таблице pagg.a_fds_contractors)
+
+GROUP BY
+  a_fds_contracts.createdat,
+  a_fds_contractors.shortname,
+  a_pfi_aspnetusers.phonenumber,
+  a_pfi_aspnetusers.email,
+  a_pfi_aspnetusers.createdat
+  
+LIMIT 5 --даже limit 5 грузился 24 минуты, чтобы отобразить всех КА в табличке, нужны ускорители запроса
+
+
