@@ -1,0 +1,90 @@
+Тестовое задание на продуктового аналитика в компании ООО Фортис (входит в группу компаний ООО Монополия)
+
+Задание 3. 
+Написать в Redash запрос, который найдёт все сессии пользователей, участники, к которым они относятся, выполнили все условия из  п.2 (есть первая транзакция в топливе) 
+и которые не подключены к сервису "Грузы.Поиск", в течение которых пользователь делал поиск грузов на платформе, то есть совершил последовательность действий:
+  1) Зашел на https://monopoly.online/cargoes/available (раздел со списком грузов);
+  2) Зашел на любую страницу груза (страница вида https://monopoly.online/cargoes/available/cargo/57d6c353-8c21-432d-af5a-420ffe590717);
+  3) Нажал "Подключить сервис".
+
+Сессией будем называть активность пользователя, в которой между последовательными действиями проходит менее одного часа. 
+Сессия начинается в момент первого из этих действий и заканчивается через час после последнего из них.
+
+Результатом должна стать выгрузка сессий вида: <идентификатор-пользователя>, <дата-время начала сессии>, <дата-время окончания сессии>.
+
+Датасет, которым необходимо пользоваться в redash
+pagg.a_bq_md295312_a255573231_events_full as events - содержит лог событий пользователей 
+pagg.a_bq_md295312_a255573231_params_full - содержит параметры к событиям (Можно объединять при необходимости оба датасета по условию : 
+events.user_pseudo_id = params.user_pseudo_id
+and events.event_timestamp = params.event_timestamp
+and events.event_name = params.event_name
+Схема датасета - https://support.google.com/analytics/answer/7029846?hl=ru 
+
+Задание выполнялось через сервис Redash (PostgreSQL).
+
+Код:
+
+WITH events AS (
+  SELECT
+    user_pseudo_id,
+    event_timestamp,
+    LAG(event_timestamp) OVER (
+      PARTITION BY user_pseudo_id
+      ORDER BY
+        event_timestamp
+    ) event_action_time
+  FROM
+    pagg.a_bq_md295312_a255573231_events_full
+),
+session_data AS (
+  SELECT
+    user_pseudo_id,
+    event_timestamp,
+    CASE
+      WHEN (event_timestamp - event_action_time) * interval '1 second' > INTERVAL '1 hour' THEN 1
+      ELSE 0
+    END AS is_sessinon_new
+  FROM
+    events
+),
+marked_session AS (
+  SELECT
+    user_pseudo_id,
+    event_timestamp,
+    SUM(is_sessinon_new) OVER (
+      PARTITION BY user_pseudo_id
+      ORDER BY
+        event_timestamp
+    ) AS session_id
+  FROM
+    session_data
+)
+SELECT
+  events_full.user_pseudo_id AS "идентификатор-пользователя",
+  MIN(params_full.event_timestamp) AS "дата-время начала сессии",
+  MAX(
+    TIMESTAMP 'epoch' + params_full.event_timestamp * INTERVAL '1 second'
+  ) + INTERVAL '1 hour' AS "дата-время окончания сессии"
+FROM
+  marked_session AS events_full
+  JOIN pagg.a_bq_md295312_a255573231_params_full AS params_full ON events_full.user_pseudo_id = params_full.user_pseudo_id --Джойним два датасета с ивентами и параметрами
+  JOIN pagg.a_pfi_aspnetusers AS a_pfi_aspnetusers ON params_full.user_userid = a_pfi_aspnetusers.id
+  JOIN pagg.a_fuel_individuallimits AS a_fuel_individuallimits ON a_pfi_aspnetusers.clientid = a_fuel_individuallimits.clientid
+  JOIN pagg.a_fds_contracts AS a_fds_contracts ON a_fuel_individuallimits.contractid = a_fds_contracts.id --для получения enddate, инфы о не подключенном договоре по грузам и для поиска договора на топливо
+  JOIN pagg.a_fuel_transactions AS a_fuel_transactions ON a_fds_contracts.id = a_fuel_transactions.contractid --для выполнения первого условия задания - "есть первая транзакция в топливе"
+WHERE
+  --a_fuel_transactions.serviceprovisioningdate <> NULL -- Первое условие задания - "есть первая транзакция в топливе"
+  a_fds_contracts.enddate is NULL --Условие из Задания 2: "Есть действующий "Сервисный договор" с покупателем топлива"
+  AND a_fds_contracts.activitytype <> 2 --Второе условие задания "которые не подключены к сервису Грузы Поиск"
+  AND events_full.event_page_location like 'https://monopoly.online/cargoes/available' --Третье условие задания "зашел на https://monopoly.online/cargoes/available  (раздел со списком грузов)"
+  AND events_full.event_page_location like 'https://monopoly.online/cargoes/available/cargo' --Четвертое условие задания "зашел на любую страницу груза  (страница вида https://monopoly.online/cargoes/available/cargo/57d6c353-8c21-432d-af5a-420ffe590717 )"
+  AND events_full.event_name = 'join_service_button_click' --Пятое условие задания "Нажал подключить сервис"
+  AND events_full.event_service_type = 'CARGO' --Пятое условие задания "Нажал подключить сервис"
+GROUP BY
+  user_pseudo_id,
+  session_id
+ORDER BY
+  user_pseudo_id,
+  MIN(event_timestamp)
+LIMIT
+  1;
